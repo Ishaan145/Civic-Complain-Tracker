@@ -1,0 +1,138 @@
+from django.db.models import F, ExpressionWrapper, FloatField
+from math import radians, sin, cos, sqrt, atan2
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib.auth import login, authenticate, logout
+from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
+from django.contrib.auth.decorators import login_required
+from django.db.models import Count
+from .models import Issue, Category, Flag
+from .forms import IssueForm, ImageForm
+from django.forms import modelformset_factory
+from django.contrib import messages
+
+def issue_list(request):
+    # User's location (can be from GPS or manual input)
+    user_lat = float(request.GET.get('lat', 0.0))
+    user_lon = float(request.GET.get('lon', 0.0))
+    
+    # Haversine formula to calculate distance
+    R = 6371  # Radius of Earth in km
+    dlat = ExpressionWrapper(models.F('latitude') - user_lat, output_field=FloatField())
+    dlon = ExpressionWrapper(models.F('longitude') - user_lon, output_field=FloatField())
+    
+    a = (
+        (models.Func(dlat * (3.14159 / 180), function='sin') ** 2) +
+        (models.Func(user_lat * (3.14159 / 180), function='cos') * models.Func(models.F('latitude') * (3.14159 / 180), function='cos')) *
+        (models.Func(dlon * (3.14159 / 180), function='sin') ** 2)
+    )
+    c = 2 * models.Func(models.Func(a, function='sqrt'), models.Func(1 - a, function='sqrt'), function='atan2')
+    distance = R * c
+
+    [cite_start]issues = Issue.objects.annotate(distance=distance).filter(distance__lte=5) # Filter within 5km radius [cite: 56]
+    
+    # Further filtering based on user input
+    status_filter = request.GET.get('status')
+    category_filter = request.GET.get('category')
+    distance_filter = request.GET.get('distance')
+
+    if status_filter:
+        [cite_start]issues = issues.filter(status=status_filter) # [cite: 77]
+    if category_filter:
+        [cite_start]issues = issues.filter(category__name=category_filter) # [cite: 78]
+    if distance_filter:
+        [cite_start]issues = issues.filter(distance__lte=int(distance_filter)) # [cite: 79]
+
+    categories = Category.objects.all()
+    
+    context = {
+        'issues': issues,
+        'categories': categories,
+    }
+    return render(request, 'issues/issue_list.html', context)
+
+def issue_detail(request, issue_id):
+    issue = get_object_or_404(Issue, id=issue_id)
+    return render(request, 'issues/issue_detail.html', {'issue': issue})
+
+def register_request(request):
+    if request.method == "POST":
+        form = UserCreationForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            login(request, user)
+            messages.success(request, "Registration successful." )
+            return redirect("issue_list")
+        messages.error(request, "Unsuccessful registration. Invalid information.")
+    form = UserCreationForm()
+    return render(request, "issues/registration/register.html", {"register_form":form})
+
+def login_request(request):
+    if request.method == "POST":
+        form = AuthenticationForm(request, data=request.POST)
+        if form.is_valid():
+            username = form.cleaned_data.get('username')
+            password = form.cleaned_data.get('password')
+            user = authenticate(username=username, password=password)
+            if user is not None:
+                login(request, user)
+                messages.info(request, f"You are now logged in as {username}.")
+                return redirect("issue_list")
+            else:
+                messages.error(request,"Invalid username or password.")
+        else:
+            messages.error(request,"Invalid username or password.")
+    form = AuthenticationForm()
+    return render(request, "issues/registration/login.html", {"login_form":form})
+
+def logout_request(request):
+	logout(request)
+	messages.info(request, "You have successfully logged out.")
+	return redirect("issue_list")
+
+@login_required
+def create_issue(request):
+    ImageFormSet = modelformset_factory(IssueImage, form=ImageForm, extra=3)
+
+    if request.method == 'POST':
+        issue_form = IssueForm(request.POST)
+        formset = ImageFormSet(request.POST, request.FILES, queryset=IssueImage.objects.none())
+
+        if issue_form.is_valid() and formset.is_valid():
+            issue = issue_form.save(commit=False)
+            if not issue.is_anonymous:
+                issue.reporter = request.user
+            issue.save()
+
+            for form in formset.cleaned_data:
+                if form:
+                    image = form['image']
+                    IssueImage.objects.create(issue=issue, image=image)
+            messages.success(request, "Issue reported successfully!")
+            return redirect('issue_detail', issue_id=issue.id)
+    else:
+        issue_form = IssueForm()
+        formset = ImageFormSet(queryset=IssueImage.objects.none())
+    return render(request, 'issues/issue_form.html', {'issue_form': issue_form, 'formset': formset})
+
+
+def issue_list(request):
+    # This view remains the same as the previous implementation
+    ...
+
+def issue_detail(request, issue_id):
+    issue = get_object_or_404(Issue, id=issue_id)
+    return render(request, 'issues/issue_detail.html', {'issue': issue})
+
+@login_required
+def flag_issue(request, issue_id):
+    issue = get_object_or_404(Issue, id=issue_id)
+    flag, created = Flag.objects.get_or_create(issue=issue, flagged_by=request.user)
+    if created:
+        messages.success(request, "Issue has been flagged.")
+        # Auto-hide logic
+        if issue.flags.count() >= 3:
+            issue.is_hidden = True
+            issue.save()
+    else:
+        messages.info(request, "You have already flagged this issue.")
+    return redirect('issue_detail', issue_id=issue.id)

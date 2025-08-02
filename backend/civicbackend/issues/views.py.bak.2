@@ -1,0 +1,166 @@
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib.auth import login, authenticate, logout
+from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
+from django.contrib.auth.decorators import login_required
+from django.contrib import messages
+from django.forms import modelformset_factory
+from django.db.models import F, ExpressionWrapper, FloatField, Func
+from math import radians, sin, cos, sqrt, atan2
+
+from .models import Issue, Category, IssueImage, Flag
+from .forms import IssueForm, ImageForm
+
+# --- User Authentication Views ---
+
+def register_request(request):
+    """
+    Handles user registration.
+    """
+    if request.method == "POST":
+        form = UserCreationForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            login(request, user)
+            messages.success(request, "Registration successful." )
+            return redirect("issue_list")
+        messages.error(request, "Unsuccessful registration. Invalid information.")
+    form = UserCreationForm()
+    return render(request, "issues/registration/register.html", {"register_form": form})
+
+def login_request(request):
+    """
+    Handles user login.
+    """
+    if request.method == "POST":
+        form = AuthenticationForm(request, data=request.POST)
+        if form.is_valid():
+            username = form.cleaned_data.get('username')
+            password = form.cleaned_data.get('password')
+            user = authenticate(username=username, password=password)
+            if user is not None:
+                login(request, user)
+                messages.info(request, f"You are now logged in as {username}.")
+                return redirect("issue_list")
+            else:
+                messages.error(request,"Invalid username or password.")
+        else:
+            messages.error(request,"Invalid username or password.")
+    form = AuthenticationForm()
+    return render(request, "issues/registration/login.html", {"login_form": form})
+
+def logout_request(request):
+    """
+    Handles user logout.
+    """
+    logout(request)
+    messages.info(request, "You have successfully logged out.")
+    return redirect("issue_list")
+
+# --- Issue Management Views ---
+
+def issue_list(request):
+    """
+    Displays a list of civic issues filtered by proximity and user-selected criteria.
+    - [cite_start]Only shows issues within a 3-5 km radius[cite: 56].
+    - [cite_start]Users can filter by status, category, and distance[cite: 74, 77, 78, 79].
+    """
+    # Default user location (can be replaced with GPS data from frontend)
+    user_lat = float(request.GET.get('lat', 0.0))
+    user_lon = float(request.GET.get('lon', 0.0))
+
+    # Haversine formula to calculate distance in kilometers
+    R = 6371
+    dlat = ExpressionWrapper(F('latitude') - user_lat, output_field=FloatField()) * (3.14159 / 180)
+    dlon = ExpressionWrapper(F('longitude') - user_lon, output_field=FloatField()) * (3.14159 / 180)
+
+    a = (
+        Func(dlat / 2, function='sin') ** 2 +
+        Func(radians(user_lat), function='cos') * Func(F('latitude') * (3.14159 / 180), function='cos') *
+        Func(dlon / 2, function='sin') ** 2
+    )
+    c = 2 * Func(Func(a, function='sqrt'), Func(1 - a, function='sqrt'), function='atan2')
+    distance = R * c
+
+    # [cite_start]Filter issues to show only non-hidden ones within a 5km radius [cite: 56]
+    issues = Issue.objects.filter(is_hidden=False).annotate(distance=distance).filter(distance__lte=5)
+
+    # Apply user-defined filters
+    status_filter = request.GET.get('status')
+    category_filter = request.GET.get('category')
+    distance_filter = request.GET.get('distance')
+
+    if status_filter:
+        issues = issues.filter(status=status_filter)
+    if category_filter:
+        issues = issues.filter(category__name=category_filter)
+    if distance_filter:
+        issues = issues.filter(distance__lte=int(distance_filter))
+
+    categories = Category.objects.all()
+
+    context = {
+        'issues': issues,
+        'categories': categories,
+    }
+    return render(request, 'issues/issue_list.html', context)
+
+def issue_detail(request, issue_id):
+    """
+    [cite_start]Displays the details of a single issue, including status change logs[cite: 69].
+    """
+    issue = get_object_or_404(Issue.objects.prefetch_related('images'), id=issue_id)
+    return render(request, 'issues/issue_detail.html', {'issue': issue})
+
+@login_required
+def create_issue(request):
+    """
+    Handles the creation of a new issue report.
+    - [cite_start]Supports title, description, category, and photos[cite: 59].
+    - [cite_start]Supports anonymous or verified reporting[cite: 60].
+    """
+    [cite_start]ImageFormSet = modelformset_factory(IssueImage, form=ImageForm, extra=3, max_num=3) # Limit to 3 images [cite: 59]
+
+    if request.method == 'POST':
+        issue_form = IssueForm(request.POST)
+        formset = ImageFormSet(request.POST, request.FILES, queryset=IssueImage.objects.none())
+
+        if issue_form.is_valid() and formset.is_valid():
+            issue = issue_form.save(commit=False)
+            [cite_start]if not issue.is_anonymous: # Anonymous reporting support [cite: 60]
+                issue.reporter = request.user
+            issue.save()
+
+            for form in formset.cleaned_data:
+                if form:
+                    image = form['image']
+                    IssueImage.objects.create(issue=issue, image=image)
+            messages.success(request, "Issue reported successfully!")
+            return redirect('issue_detail', issue_id=issue.id)
+    else:
+        issue_form = IssueForm()
+        formset = ImageFormSet(queryset=IssueImage.objects.none())
+
+    context = {
+        'issue_form': issue_form,
+        'formset': formset,
+    }
+    return render(request, 'issues/issue_form.html', context)
+
+@login_required
+def flag_issue(request, issue_id):
+    """
+    [cite_start]Allows a logged-in user to flag an issue as spam or irrelevant[cite: 81].
+    - [cite_start]If an issue is flagged by multiple users, it is automatically hidden[cite: 82].
+    """
+    issue = get_object_or_404(Issue, id=issue_id)
+    flag, created = Flag.objects.get_or_create(issue=issue, flagged_by=request.user)
+    if created:
+        messages.success(request, "Issue has been flagged as irrelevant.")
+        # Auto-hide the issue after 3 flags
+        if issue.flags.count() >= 3:
+            issue.is_hidden = True
+            issue.save()
+            messages.warning(request, "This issue has been flagged multiple times and is now hidden pending review.")
+    else:
+        messages.info(request, "You have already flagged this issue.")
+    return redirect('issue_detail', issue_id=issue.id)
