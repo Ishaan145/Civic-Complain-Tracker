@@ -32,7 +32,7 @@ def serialize_issue(issue):
         'is_anonymous': issue.is_anonymous,
         'images': [img.image.url for img in issue.images.all()],
         'flag_count': issue.flags.count(),
-        'history': [{'status': h.status, 'timestamp': h.timestamp.isoformat()} for h in issue.history.all()],
+        #'history': [{'status': h.status, 'timestamp': h.timestamp.isoformat()} for h in issue.history.all()],
         'distance': distance_in_km,
 
     }
@@ -147,7 +147,7 @@ def issue_detail_api(request, issue_id):
     issue = get_object_or_404(Issue.objects.prefetch_related('images', 'flags'), id=issue_id)
     return JsonResponse(serialize_issue(issue))
 
-
+"""
 @csrf_exempt
 def create_issue_api(request):
     if not request.user.is_authenticated:
@@ -171,6 +171,76 @@ def create_issue_api(request):
 
         return JsonResponse(serialize_issue(issue), status=201)
     return JsonResponse({'error': 'Invalid request method'}, status=405)
+"""
+
+# issues/views.py
+"""
+# @csrf_exempt
+def create_issue_api(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    if request.method == 'POST':
+        try:
+            # --- NEW: Wrapped logic in a try...except block ---
+            issue = Issue.objects.create(
+                title=request.POST.get('title'),
+                description=request.POST.get('description'),
+                category=get_object_or_404(Category, id=request.POST.get('category')),
+                latitude=request.POST.get('latitude'),
+                longitude=request.POST.get('longitude'),
+                reporter=request.user if request.POST.get('is_anonymous') == 'false' else None,
+                is_anonymous=request.POST.get('is_anonymous') == 'true'
+            )
+
+            for file in request.FILES.getlist('images'):
+                IssueImage.objects.create(issue=issue, image=file)
+
+            return JsonResponse(serialize_issue(issue), status=201)
+        except Exception as e:
+            # Return a specific error if something goes wrong during creation
+            return JsonResponse({'error': f'Invalid data provided. {str(e)}'}, status=400)
+
+    return JsonResponse({'error': 'Invalid request method'}, status=405)
+"""
+
+# @csrf_exempt
+def create_issue_api(request):
+    # 1. Check if the user is logged in
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    # 2. Ensure the request is a POST request
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Invalid request method. Please use POST.'}, status=405)
+
+    # 3. Use a try...except block to catch any errors during creation
+    try:
+        # Get the category object, or return a 404 if it doesn't exist
+        category_id = request.POST.get('category')
+        category = get_object_or_404(Category, id=category_id)
+
+        # Create the new Issue object
+        issue = Issue.objects.create(
+            title=request.POST.get('title'),
+            description=request.POST.get('description'),
+            category=category,
+            latitude=request.POST.get('latitude'),
+            longitude=request.POST.get('longitude'),
+            reporter=request.user if request.POST.get('is_anonymous') == 'false' else None,
+            is_anonymous=request.POST.get('is_anonymous') == 'true'
+        )
+
+        # Handle any uploaded images
+        for file in request.FILES.getlist('images'):
+            IssueImage.objects.create(issue=issue, image=file)
+        
+        # On success, return the new issue data as JSON
+        return JsonResponse(serialize_issue(issue), status=201)
+
+    except Exception as e:
+        # If any error occurs above, catch it and return a clean JSON error message
+        return JsonResponse({'error': f'An error occurred: {str(e)}'}, status=400)
 
 
 @csrf_exempt
