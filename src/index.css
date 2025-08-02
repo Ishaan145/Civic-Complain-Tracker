@@ -1,0 +1,18 @@
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&display=swap');
+
+/* Tailwind base styles */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Optional: Custom styles */
+body {
+  font-family: 'Lora', serif;
+  background-color: #f9f9f9;
+  color: #222;
+}
+
+/* Utility classes for layout (optional, if needed) */
+.container {
+  @apply max-w-7xl mx-auto px-4;
+}
