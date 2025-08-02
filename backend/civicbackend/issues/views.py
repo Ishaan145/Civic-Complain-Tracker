@@ -12,10 +12,11 @@ from .models import Issue, Category, IssueImage, Flag
 # --- Helper Functions ---
 
 def serialize_issue(issue):
-    """Converts an Issue model instance into a dictionary."""
     reporter_username = 'Anonymous'
     if not issue.is_anonymous and issue.reporter:
         reporter_username = issue.reporter.username
+
+    distance_in_km = getattr(issue, 'distance', None)
 
     return {
         'id': issue.id,
@@ -30,14 +31,16 @@ def serialize_issue(issue):
         'updated_at': issue.updated_at.isoformat(),
         'is_anonymous': issue.is_anonymous,
         'images': [img.image.url for img in issue.images.all()],
-        'flag_count': issue.flags.count()
+        'flag_count': issue.flags.count(),
+        'history': [{'status': h.status, 'timestamp': h.timestamp.isoformat()} for h in issue.history.all()],
+        'distance': distance_in_km,
+
     }
 
 # --- Authentication API Views ---
 
 @csrf_exempt
 def register_api(request):
-    """Handles user registration via API."""
     if request.method == 'POST':
         data = json.loads(request.body)
         username = data.get('username')
@@ -57,7 +60,6 @@ def register_api(request):
 
 @csrf_exempt
 def login_api(request):
-    """Handles user login and session creation via API."""
     if request.method == 'POST':
         data = json.loads(request.body)
         username = data.get('username')
@@ -75,15 +77,13 @@ def login_api(request):
 
 @csrf_exempt
 def logout_api(request):
-    """Handles user logout via API."""
     logout(request)
     return JsonResponse({'success': 'Logout successful'})
 
 
 # --- Issue Management API Views ---
-
+"""
 def issue_list_api(request):
-    """Provides a list of issues based on geographic proximity and filters."""
     user_lat = float(request.GET.get('lat', 0.0))
     user_lon = float(request.GET.get('lon', 0.0))
 
@@ -109,17 +109,47 @@ def issue_list_api(request):
 
     data = [serialize_issue(issue) for issue in issues]
     return JsonResponse(data, safe=False)
+"""
 
+def issue_list_api(request):
+    user_lat = float(request.GET.get('lat', 0.0))
+    user_lon = float(request.GET.get('lon', 0.0))
+
+    # Haversine formula for distance calculation
+    R = 6371  # Earth radius in km
+    dlat = ExpressionWrapper(F('latitude') - user_lat, output_field=FloatField()) * (3.14159 / 180)
+    dlon = ExpressionWrapper(F('longitude') - user_lon, output_field=FloatField()) * (3.14159 / 180)
+
+    # --- THIS IS THE CORRECTED PART ---
+    a = (
+        ExpressionWrapper(Func(dlat / 2, function='sin') ** 2, output_field=FloatField()) +
+        ExpressionWrapper(Func(radians(user_lat), function='cos') * Func(F('latitude') * (3.14159 / 180), function='cos') * (Func(dlon / 2, function='sin') ** 2), output_field=FloatField())
+    )
+    # ------------------------------------
+
+    c = 2 * Func(Func(a, function='sqrt'), Func(1 - a, function='sqrt'), function='atan2')
+    distance = R * c
+
+    issues = Issue.objects.filter(is_hidden=False).annotate(distance=distance).filter(distance__lte=5)
+
+    # Filtering logic
+    if status_filter := request.GET.get('status'):
+        issues = issues.filter(status=status_filter)
+    if category_filter := request.GET.get('category'):
+        issues = issues.filter(category__name=category_filter)
+    if distance_filter := request.GET.get('distance'):
+        issues = issues.filter(distance__lte=int(distance_filter))
+
+    data = [serialize_issue(issue) for issue in issues]
+    return JsonResponse(data, safe=False)
 
 def issue_detail_api(request, issue_id):
-    """Provides detailed information for a single issue."""
     issue = get_object_or_404(Issue.objects.prefetch_related('images', 'flags'), id=issue_id)
     return JsonResponse(serialize_issue(issue))
 
 
 @csrf_exempt
 def create_issue_api(request):
-    """Handles new issue creation from the API. Expects multipart/form-data."""
     if not request.user.is_authenticated:
         return JsonResponse({'error': 'Authentication required'}, status=401)
 
@@ -145,7 +175,6 @@ def create_issue_api(request):
 
 @csrf_exempt
 def flag_issue_api(request, issue_id):
-    """Handles flagging an issue as spam or irrelevant."""
     if not request.user.is_authenticated:
         return JsonResponse({'error': 'Authentication required'}, status=401)
 
@@ -164,7 +193,6 @@ def flag_issue_api(request, issue_id):
 
 
 def category_list_api(request):
-    """Provides a list of all available issue categories."""
     categories = Category.objects.all()
     data = [{'id': cat.id, 'name': cat.name} for cat in categories]
     return JsonResponse(data, safe=False)
