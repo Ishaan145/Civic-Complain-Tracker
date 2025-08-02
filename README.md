@@ -3,7 +3,7 @@ Empower citizens to easily report local issues such as road damage, garbage, and
 
 # Features Visibility
 Only civic issues reported within a 3-5 km radius are visible to the user, based on GPS or manual location.
-Users can report issues with a title, short description, photos (up to 3 5 , andn category selection.
+Users can report issues with a title, short description, photos (up to 3 5 , and category selection.
 Anonymous or verified reporting is supported.
 
 <h2> Team Members </h2>
