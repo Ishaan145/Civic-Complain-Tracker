@@ -6,6 +6,10 @@ Only civic issues reported within a 3-5 km radius are visible to the user, based
 Users can report issues with a title, short description, photos (up to 3 5 , and category selection.
 Anonymous or verified reporting is supported.
 
+# Libraries and Tools used
+We've used React as our frontend and Django as our backend. A REST API was utilized to connect both the sides. 
+For database, we employed PostgresSQL. Additionally our frontend also uses TailwindCSS.
+
 <h2> Team Members </h2>
 <ul>
 <li> Ishaan Saxena - 23mc3027@rgipt.ac.in </li>
